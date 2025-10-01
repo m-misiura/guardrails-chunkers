@@ -1,0 +1,7 @@
+.venv/
+.python-version
+__pycache__/
+*.pyc
+chunkers/*_pb2.py
+chunkers/*_pb2_grpc.py
+chunkers/*_pb2.pyi

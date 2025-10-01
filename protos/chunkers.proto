@@ -1,0 +1,17 @@
+syntax = "proto3";
+package caikit.runtime.Chunkers;
+import "caikit_data_model_nlp.proto";
+
+message BidiStreamingChunkerTokenizationTaskRequest {
+  string text_stream = 1;
+  int64 input_index_stream = 2;
+}
+
+message ChunkerTokenizationTaskRequest {
+  string text = 1;
+}
+
+service ChunkersService {
+  rpc BidiStreamingChunkerTokenizationTaskPredict(stream caikit.runtime.Chunkers.BidiStreamingChunkerTokenizationTaskRequest) returns (stream caikit_data_model.nlp.ChunkerTokenizationStreamResult);
+  rpc ChunkerTokenizationTaskPredict(caikit.runtime.Chunkers.ChunkerTokenizationTaskRequest) returns (caikit_data_model.nlp.TokenizationResults);
+}
