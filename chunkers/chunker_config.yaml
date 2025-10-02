@@ -1,0 +1,12 @@
+recursive_character:
+  class: "langchain_text_splitters.RecursiveCharacterTextSplitter"
+  defaults:
+    chunk_size: 100
+    chunk_overlap: 0
+
+character:
+  class: "langchain_text_splitters.CharacterTextSplitter"
+  defaults:
+    separator: "\n\n"
+    chunk_size: 100
+    chunk_overlap: 0

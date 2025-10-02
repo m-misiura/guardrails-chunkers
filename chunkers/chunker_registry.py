@@ -1,7 +1,3 @@
-"""
-Registry for managing available chunkers.
-"""
-
 from typing import Dict, List, Optional
 
 from .base_chunker import BaseChunker

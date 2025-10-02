@@ -4,6 +4,7 @@ from concurrent import futures
 
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+from grpc_reflection.v1alpha import reflection
 
 from . import (caikit_data_model_nlp_pb2, chunkers_pb2_grpc,
                get_chunker_registry)
@@ -141,10 +142,25 @@ async def serve():
     health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
     health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
 
+    # Enable gRPC reflection
+    SERVICE_NAMES = (
+        "caikit.runtime.Chunkers.ChunkersService",
+        "grpc.health.v1.Health",
+        reflection.SERVICE_NAME,
+    )
+    reflection.enable_server_reflection(SERVICE_NAMES, server)
+
     server.add_insecure_port("[::]:8085")
+
+    # Get available chunkers from registry
+    from . import get_chunker_registry
+
+    registry = get_chunker_registry()
+    available_chunkers = ", ".join(registry.list_names())
+
     logger.info("=" * 80)
     logger.info("gRPC server listening on port 8085")
-    logger.info("Available chunkers: sentence")
+    logger.info(f"Available chunkers: {available_chunkers}")
     logger.info("Health check endpoint: grpc.health.v1.Health/Check")
     logger.info("=" * 80)
     await server.start()

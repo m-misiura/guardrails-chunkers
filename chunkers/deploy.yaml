@@ -15,31 +15,15 @@ spec:
     metadata:
       labels:
         app: chunker-service
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8085"
-        prometheus.io/path: "/metrics"
     spec:
       containers:
       - name: chunker
-        image: quay.io/rh-ee-mmisiura/chunkers:trial_0
+        image: quay.io/rh-ee-mmisiura/chunkers:llangchain
         imagePullPolicy: Always
         ports:
         - containerPort: 8085
           name: grpc
           protocol: TCP
-        livenessProbe:
-          grpc:
-            port: 8085
-          initialDelaySeconds: 10
-          periodSeconds: 30
-          timeoutSeconds: 5
-        readinessProbe:
-          grpc:
-            port: 8085
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 5
         resources:
           requests:
             memory: "512Mi"
@@ -47,9 +31,6 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "1000m"
-        env:
-        - name: LOG_LEVEL
-          value: "INFO"
 ---
 apiVersion: v1
 kind: Service
