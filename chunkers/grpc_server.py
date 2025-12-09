@@ -132,8 +132,26 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
 async def serve():
     """Start the gRPC server."""
     interceptors = [LoggingInterceptor()]
+    
+    options = [
+        # Keepalive: 
+        ('grpc.http2.min_ping_interval_without_data_ms', 10000),
+        ('grpc.keepalive_permit_without_calls', 1),
+        ('grpc.keepalive_time_ms', 30000),
+        ('grpc.keepalive_timeout_ms', 60000),
+        # Resource limits
+        ('grpc.http2.max_concurrent_streams', 100),
+        ('grpc.max_receive_message_length', 10 * 1024 * 1024),
+        ('grpc.max_send_message_length', 10 * 1024 * 1024),
+        # Connection lifecycle
+        ('grpc.max_connection_age_ms', 30 * 60 * 1000),
+        ('grpc.max_connection_idle_ms', 10 * 60 * 1000),
+    ]
+    
     server = grpc.aio.server(
-        futures.ThreadPoolExecutor(max_workers=10), interceptors=interceptors
+        futures.ThreadPoolExecutor(max_workers=50),
+        interceptors=interceptors,
+        options=options
     )
 
     chunkers_pb2_grpc.add_ChunkersServiceServicer_to_server(ChunkersServicer(), server)
@@ -165,7 +183,6 @@ async def serve():
     logger.info("=" * 80)
     await server.start()
     await server.wait_for_termination()
-
 
 if __name__ == "__main__":
     asyncio.run(serve())
