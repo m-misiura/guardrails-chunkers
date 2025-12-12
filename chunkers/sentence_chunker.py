@@ -9,6 +9,10 @@ class SentenceChunker(BaseChunker):
 
     DEFAULT_PATTERN = r"[.!?]+(?=\s+[A-Z]|$)"
 
+    def __init__(self):
+        """Initialize with pre-compiled regex for performance."""
+        self._compiled_regex = re.compile(self.DEFAULT_PATTERN)
+
     @property
     def name(self) -> str:
         return "sentence"
@@ -30,7 +34,7 @@ class SentenceChunker(BaseChunker):
         if not text.strip():
             return []
 
-        regex = re.compile(pattern or self.DEFAULT_PATTERN)
+        regex = re.compile(pattern) if pattern else self._compiled_regex
         sentences = []
         last_end = 0
         for match in regex.finditer(text):
