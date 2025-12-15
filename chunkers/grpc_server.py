@@ -85,6 +85,8 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
             metadata = dict(context.invocation_metadata())
             model_id = metadata.get("mm-model-id", "sentence")
 
+            logger.info(f"[STREAM] Starting bidirectional stream, model={model_id}")
+
             chunker = self.registry.get(model_id)
             if not chunker:
                 logger.error(
@@ -123,6 +125,8 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
                 accumulated_text += request.text_stream
                 text_tracker.append(request.text_stream)
 
+                logger.info(f"[STREAM] Msg #{request_count}: received {len(request.text_stream)} chars, idx={request.input_index_stream}, accumulated={len(accumulated_text)}")
+
                 if request.input_index_stream != -1:
                     input_index_tracker.append(request.input_index_stream)
                     end_processing_counter += 1
@@ -131,9 +135,12 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
 
                 # Run chunker on the portion of text not yet processed
                 chunks = chunker.chunk(accumulated_text[processed_offset:])
+                logger.info(f"[STREAM] Chunker found {len(chunks)} sentences in unprocessed text")
+                logger.info(f"[STREAM] processed_offset={processed_offset}, accumulated_len={len(accumulated_text)}")
 
-                # Only yield complete chunks (keep last one buffered)
+                # Yield complete chunks (buffer last one as it may be incomplete)
                 if len(chunks) > 1:
+                    logger.info(f"[STREAM] Yielding {len(chunks)-1} complete sentences (buffering last)")
                     # Clear text tracker when sentences are detected
                     text_tracker = []
 
@@ -151,10 +158,14 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
                         if first_event and abs_start != 0:
                             abs_start = 0
                             text = accumulated_text[abs_start:abs_end]
-                            first_event = False
 
                         yielded_chunks.add((abs_start, abs_end))
                         chunk_count += 1
+                        logger.info(f"[STREAM] Yielding chunk: '{text}' [{abs_start}:{abs_end}]")
+
+                        # Mark first event as complete after first yield
+                        if first_event:
+                            first_event = False
 
                         # Calculate input index range for this chunk
                         if start_processing_counter >= len(input_index_tracker):
@@ -176,9 +187,11 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
                             token_count=1,
                         )
 
-                        # Update processed offset and start counter
-                        processed_offset = abs_end
-                        start_processing_counter = end_processing_counter
+                    # Update processed offset AFTER yielding all chunks (not inside loop)
+                    _, _, last_end = chunks[-2]  # Last yielded chunk (not last buffered)
+                    processed_offset = last_end + processed_offset
+                    logger.info(f"[STREAM] Updated processed_offset to {processed_offset}")
+                    start_processing_counter = end_processing_counter
 
             # Stream iteration complete - yield any remaining chunks
             remaining_chunks = chunker.chunk(accumulated_text[processed_offset:])

@@ -7,7 +7,7 @@ from .base_chunker import BaseChunker
 class SentenceChunker(BaseChunker):
     """Chunk text into sentences using regex pattern."""
 
-    DEFAULT_PATTERN = r"[.!?]+(?=\s+[A-Z]|$)"
+    DEFAULT_PATTERN = r"[.!?]+(?=\s|\n|$)|\n"
 
     def __init__(self):
         """Initialize with pre-compiled regex for performance."""
