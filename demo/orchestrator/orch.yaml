@@ -8,11 +8,11 @@ data:
       sentence:
         type: sentence
         service:
-            hostname: "chunker-service.test.svc.cluster.local"
+            hostname: "chunker-service.final-test.svc.cluster.local"
             port: 8085
-    chat_generation:
+    openai:
       service:
-        hostname: llm-predictor.test.svc.cluster.local
+        hostname: llm-predictor.final-test.svc.cluster.local
         port: 8080
     detectors:
       built-in-detector:
@@ -22,10 +22,16 @@ data:
             port: 8080
         chunker_id: sentence
         default_threshold: 0.5
+        detector_params:
+          regex:
+            - email
+            - ssn
+            - credit-card
+            - V60
       hap:
         type: text_contents
         service:
-          hostname: ibm-hap-38m-detector-predictor.test.svc.cluster.local
+          hostname: ibm-hap-38m-detector-predictor.final-test.svc.cluster.local
           port: 8000
         chunker_id: sentence
         default_threshold: 0.5
