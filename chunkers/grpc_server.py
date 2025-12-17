@@ -1,17 +1,33 @@
 import logging
 from concurrent import futures
+from dataclasses import dataclass, field
+from typing import Set, Tuple, List
 
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from grpc_reflection.v1alpha import reflection
 
-from . import (caikit_data_model_nlp_pb2, chunkers_pb2_grpc,
-               get_chunker_registry)
+from . import caikit_data_model_nlp_pb2, chunkers_pb2_grpc, get_chunker_registry
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StreamState:
+    """Manages state for streaming chunker operations."""
+
+    accumulated_text: str = ""
+    processed_offset: int = 0
+    input_index_tracker: List[int] = field(default_factory=list)
+    chunk_count: int = 0
+    yielded_chunks: Set[Tuple[int, int]] = field(default_factory=set)
+    text_tracker: List[str] = field(default_factory=list)
+    start_processing_counter: int = -1
+    end_processing_counter: int = -1
+    first_event: bool = True
 
 
 class LoggingInterceptor(grpc.ServerInterceptor):
@@ -64,16 +80,10 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
             logger.info(
                 f"Chunking complete: model_id={model_id}, chunks={len(results)}"
             )
-            logger.debug(
-                f"Chunk details: {[(r.start, r.end, r.text[:50]) for r in results]}"
-            )
 
-            response = caikit_data_model_nlp_pb2.TokenizationResults(
+            return caikit_data_model_nlp_pb2.TokenizationResults(
                 results=results, token_count=len(results)
             )
-
-            logger.info(f"Sending response: token_count={response.token_count}")
-            return response
 
         except Exception as e:
             logger.error(f"Chunking failed: {e}", exc_info=True)
@@ -94,168 +104,154 @@ class ChunkersServicer(chunkers_pb2_grpc.ChunkersServiceServicer):
                 )
                 context.abort(grpc.StatusCode.NOT_FOUND, f"Unknown chunker: {model_id}")
 
-            # Accumulate text and track input indices
-            accumulated_text = ""
-            processed_offset = 0
-            input_index_tracker = []
-            chunk_count = 0
-            yielded_chunks = set()  # Track (start, end) to avoid duplicates
-            text_tracker = []  # Track text chunks for whitespace-only case
-            start_processing_counter = -1
-            end_processing_counter = -1
-            first_event = True
-
-            request_count = 0
+            state = StreamState()
 
             # Yield initial empty response to establish bidirectional stream
-            # This prevents deadlock where client waits for first response before sending data
-            yield caikit_data_model_nlp_pb2.ChunkerTokenizationStreamResult(
-                results=[],
-                input_start_index=0,
-                input_end_index=0,
-                start_index=0,
-                processed_index=0,
-                token_count=0,
-            )
+            yield self._create_stream_result([], 0, 0, 0, 0, 0)
 
-            for request in request_iterator:
-                request_count += 1
-
+            for request_count, request in enumerate(request_iterator, 1):
                 # Accumulate text and track input index
-                accumulated_text += request.text_stream
-                text_tracker.append(request.text_stream)
+                state.accumulated_text += request.text_stream
+                state.text_tracker.append(request.text_stream)
 
-                logger.info(f"[STREAM] Msg #{request_count}: received {len(request.text_stream)} chars, idx={request.input_index_stream}, accumulated={len(accumulated_text)}")
+                logger.info(
+                    f"[STREAM] Msg #{request_count}: received {len(request.text_stream)} chars, "
+                    f"idx={request.input_index_stream}, accumulated={len(state.accumulated_text)}"
+                )
 
                 if request.input_index_stream != -1:
-                    input_index_tracker.append(request.input_index_stream)
-                    end_processing_counter += 1
-                    if start_processing_counter < 0:
-                        start_processing_counter = 0
+                    state.input_index_tracker.append(request.input_index_stream)
+                    state.end_processing_counter += 1
+                    if state.start_processing_counter < 0:
+                        state.start_processing_counter = 0
 
-                # Run chunker on the portion of text not yet processed
-                chunks = chunker.chunk(accumulated_text[processed_offset:])
-                logger.info(f"[STREAM] Chunker found {len(chunks)} sentences in unprocessed text")
-                logger.info(f"[STREAM] processed_offset={processed_offset}, accumulated_len={len(accumulated_text)}")
+                # Run chunker on unprocessed text
+                chunks = chunker.chunk(state.accumulated_text[state.processed_offset :])
+                logger.info(
+                    f"[STREAM] Chunker found {len(chunks)} sentences in unprocessed text"
+                )
 
                 # Yield complete chunks (buffer last one as it may be incomplete)
                 if len(chunks) > 1:
-                    logger.info(f"[STREAM] Yielding {len(chunks)-1} complete sentences (buffering last)")
-                    # Clear text tracker when sentences are detected
-                    text_tracker = []
+                    logger.info(
+                        f"[STREAM] Yielding {len(chunks)-1} complete sentences (buffering last)"
+                    )
+                    state.text_tracker = []
 
                     # Yield all but the last chunk
-                    for idx, (text, start, end) in enumerate(chunks[:-1]):
-                        # Adjust positions to be absolute (add offset)
-                        abs_start = start + processed_offset
-                        abs_end = end + processed_offset
+                    for text, start, end in chunks[:-1]:
+                        yield from self._yield_chunk(state, text, start, end)
 
-                        # Skip if already yielded
-                        if (abs_start, abs_end) in yielded_chunks:
-                            continue
+                    # Update processed offset after yielding all chunks
+                    _, _, last_end = chunks[-2]
+                    state.processed_offset += last_end
+                    state.start_processing_counter = state.end_processing_counter
 
-                        # Handle leading whitespace for first event
-                        if first_event and abs_start != 0:
-                            abs_start = 0
-                            text = accumulated_text[abs_start:abs_end]
-
-                        yielded_chunks.add((abs_start, abs_end))
-                        chunk_count += 1
-                        logger.info(f"[STREAM] Yielding chunk: '{text}' [{abs_start}:{abs_end}]")
-
-                        # Mark first event as complete after first yield
-                        if first_event:
-                            first_event = False
-
-                        # Calculate input index range for this chunk
-                        if start_processing_counter >= len(input_index_tracker):
-                            start_processing_counter = len(input_index_tracker) - 1
-
-                        chunk_input_start = input_index_tracker[start_processing_counter] if start_processing_counter >= 0 else 0
-                        chunk_input_end = input_index_tracker[end_processing_counter - 1] if end_processing_counter > 0 else 0
-
-                        yield caikit_data_model_nlp_pb2.ChunkerTokenizationStreamResult(
-                            results=[
-                                caikit_data_model_nlp_pb2.Token(
-                                    start=abs_start, end=abs_end, text=text
-                                )
-                            ],
-                            input_start_index=chunk_input_start,
-                            input_end_index=chunk_input_end,
-                            start_index=abs_start,
-                            processed_index=abs_end,
-                            token_count=1,
-                        )
-
-                    # Update processed offset AFTER yielding all chunks (not inside loop)
-                    _, _, last_end = chunks[-2]  # Last yielded chunk (not last buffered)
-                    processed_offset = last_end + processed_offset
-                    logger.info(f"[STREAM] Updated processed_offset to {processed_offset}")
-                    start_processing_counter = end_processing_counter
-
-            # Stream iteration complete - yield any remaining chunks
-            remaining_chunks = chunker.chunk(accumulated_text[processed_offset:])
-
-            if remaining_chunks:
-                for text, start, end in remaining_chunks:
-                    abs_start = start + processed_offset
-                    abs_end = end + processed_offset
-
-                    if (abs_start, abs_end) in yielded_chunks:
-                        continue
-
-                    # Handle leading whitespace for first event
-                    if first_event and abs_start != 0:
-                        abs_start = 0
-                        text = accumulated_text[abs_start:abs_end]
-                        first_event = False
-
-                    yielded_chunks.add((abs_start, abs_end))
-                    chunk_count += 1
-
-                    chunk_input_start = input_index_tracker[start_processing_counter] if start_processing_counter >= 0 else 0
-                    chunk_input_end = input_index_tracker[-1] if input_index_tracker else 0
-
-                    yield caikit_data_model_nlp_pb2.ChunkerTokenizationStreamResult(
-                        results=[
-                            caikit_data_model_nlp_pb2.Token(
-                                start=abs_start, end=abs_end, text=text
-                            )
-                        ],
-                        input_start_index=chunk_input_start,
-                        input_end_index=chunk_input_end,
-                        start_index=abs_start,
-                        processed_index=abs_end,
-                        token_count=1,
-                    )
-            else:
-                # Handle whitespace-only or no-chunk case
-                # Yield text chunks as-is when no sentences are detected
-                sentence_start = 0
-                chunk_input_start = input_index_tracker[start_processing_counter] if start_processing_counter >= 0 else 0
-                chunk_input_end = input_index_tracker[-1] if input_index_tracker else 0
-
-                for text_chunk in text_tracker:
-                    sentence_end = sentence_start + len(text_chunk)
-                    chunk_count += 1
-
-                    yield caikit_data_model_nlp_pb2.ChunkerTokenizationStreamResult(
-                        results=[
-                            caikit_data_model_nlp_pb2.Token(
-                                start=sentence_start, end=sentence_end, text=text_chunk
-                            )
-                        ],
-                        input_start_index=chunk_input_start,
-                        input_end_index=chunk_input_end,
-                        start_index=sentence_start,
-                        processed_index=sentence_end,
-                        token_count=1,
-                    )
-                    sentence_start = sentence_end
+            # Stream complete - yield remaining chunks
+            yield from self._yield_remaining_chunks(chunker, state)
 
         except Exception as e:
             logger.error(f"Stream chunking failed: {e}", exc_info=True)
             context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+    def _yield_chunk(self, state: StreamState, text: str, start: int, end: int):
+        """Helper to yield a single chunk with proper position tracking."""
+        abs_start = start + state.processed_offset
+        abs_end = end + state.processed_offset
+
+        # Skip if already yielded
+        if (abs_start, abs_end) in state.yielded_chunks:
+            return
+
+        # Handle leading whitespace for first event
+        if state.first_event and abs_start != 0:
+            abs_start = 0
+            text = state.accumulated_text[abs_start:abs_end]
+
+        state.yielded_chunks.add((abs_start, abs_end))
+        state.chunk_count += 1
+
+        # Mark first event as complete after first yield
+        if state.first_event:
+            state.first_event = False
+
+        # Calculate input indices
+        chunk_input_start, chunk_input_end = self._calculate_input_indices(state)
+
+        yield self._create_stream_result(
+            [caikit_data_model_nlp_pb2.Token(start=abs_start, end=abs_end, text=text)],
+            chunk_input_start,
+            chunk_input_end,
+            abs_start,
+            abs_end,
+            1,
+        )
+
+    def _yield_remaining_chunks(self, chunker, state: StreamState):
+        """Yield any remaining chunks after stream completes."""
+        remaining_chunks = chunker.chunk(
+            state.accumulated_text[state.processed_offset :]
+        )
+
+        if remaining_chunks:
+            for text, start, end in remaining_chunks:
+                yield from self._yield_chunk(state, text, start, end)
+        else:
+            # Handle whitespace-only or no-chunk case
+            yield from self._yield_text_tracker(state)
+
+    def _yield_text_tracker(self, state: StreamState):
+        """Yield text chunks as-is when no sentences are detected."""
+        sentence_start = 0
+        chunk_input_start, chunk_input_end = self._calculate_input_indices(state)
+
+        for text_chunk in state.text_tracker:
+            sentence_end = sentence_start + len(text_chunk)
+            state.chunk_count += 1
+
+            yield self._create_stream_result(
+                [
+                    caikit_data_model_nlp_pb2.Token(
+                        start=sentence_start, end=sentence_end, text=text_chunk
+                    )
+                ],
+                chunk_input_start,
+                chunk_input_end,
+                sentence_start,
+                sentence_end,
+                1,
+            )
+            sentence_start = sentence_end
+
+    def _calculate_input_indices(self, state: StreamState) -> Tuple[int, int]:
+        """Calculate input index range for current chunk."""
+        start_counter = state.start_processing_counter
+        end_counter = state.end_processing_counter
+
+        # Clamp start counter to valid range
+        if start_counter >= len(state.input_index_tracker):
+            start_counter = len(state.input_index_tracker) - 1
+
+        chunk_input_start = (
+            state.input_index_tracker[start_counter] if start_counter >= 0 else 0
+        )
+        chunk_input_end = (
+            state.input_index_tracker[end_counter - 1] if end_counter > 0 else 0
+        )
+
+        return chunk_input_start, chunk_input_end
+
+    @staticmethod
+    def _create_stream_result(results, input_start, input_end, start, processed, count):
+        """Create a ChunkerTokenizationStreamResult."""
+        return caikit_data_model_nlp_pb2.ChunkerTokenizationStreamResult(
+            results=results,
+            input_start_index=input_start,
+            input_end_index=input_end,
+            start_index=start,
+            processed_index=processed,
+            token_count=count,
+        )
 
 
 def serve():
@@ -263,24 +259,24 @@ def serve():
     interceptors = [LoggingInterceptor()]
 
     options = [
-        # Keepalive:
-        ('grpc.http2.min_ping_interval_without_data_ms', 10000),
-        ('grpc.keepalive_permit_without_calls', 1),
-        ('grpc.keepalive_time_ms', 30000),
-        ('grpc.keepalive_timeout_ms', 60000),
+        # Keepalive
+        ("grpc.http2.min_ping_interval_without_data_ms", 10000),
+        ("grpc.keepalive_permit_without_calls", 1),
+        ("grpc.keepalive_time_ms", 30000),
+        ("grpc.keepalive_timeout_ms", 60000),
         # Resource limits
-        ('grpc.http2.max_concurrent_streams', 500),
-        ('grpc.max_receive_message_length', 10 * 1024 * 1024),
-        ('grpc.max_send_message_length', 10 * 1024 * 1024),
+        ("grpc.http2.max_concurrent_streams", 500),
+        ("grpc.max_receive_message_length", 10 * 1024 * 1024),
+        ("grpc.max_send_message_length", 10 * 1024 * 1024),
         # Connection lifecycle
-        ('grpc.max_connection_age_ms', 30 * 60 * 1000),
-        ('grpc.max_connection_idle_ms', 10 * 60 * 1000),
+        ("grpc.max_connection_age_ms", 30 * 60 * 1000),
+        ("grpc.max_connection_idle_ms", 10 * 60 * 1000),
     ]
 
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=200),
         interceptors=interceptors,
-        options=options
+        options=options,
     )
 
     chunkers_pb2_grpc.add_ChunkersServiceServicer_to_server(ChunkersServicer(), server)
@@ -299,9 +295,6 @@ def serve():
 
     server.add_insecure_port("[::]:8085")
 
-    # Get available chunkers from registry
-    from . import get_chunker_registry
-
     registry = get_chunker_registry()
     available_chunkers = ", ".join(registry.list_names())
 
@@ -312,6 +305,7 @@ def serve():
     logger.info("=" * 80)
     server.start()
     server.wait_for_termination()
+
 
 if __name__ == "__main__":
     serve()
