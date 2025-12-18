@@ -2,6 +2,8 @@ apiVersion: serving.kserve.io/v1alpha1
 kind: LLMInferenceService
 metadata:
   name: qwen2-05b-instruct-single
+  annotations: 
+    security.opendatahub.io/enable-auth: 'false'
 spec:
   model:
     uri: hf://Qwen/Qwen2.5-0.5B-Instruct

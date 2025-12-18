@@ -19,7 +19,6 @@ data:
         hostname: openshift-ai-inference-openshift-default.openshift-ingress.svc.cluster.local
         port: 80
         path_prefix: /llm-d/qwen2-05b-instruct-single
-        tls: qwen-tls
     detectors:
       built-in-detector:
         type: text_contents
@@ -41,12 +40,6 @@ data:
           port: 8000
         chunker_id: sentence
         default_threshold: 0.5
-    tls:
-      qwen-tls:
-        cert_path: "/etc/tls/qwen-ca-tls/tls.crt"
-        key_path: "/etc/tls/qwen-ca-tls/tls.key" 
-        client_ca_cert_path: "/etc/tls/qwen-ca-tls/ca.crt"
-        insecure: true
 ---
 kind: ConfigMap
 apiVersion: v1
@@ -97,5 +90,3 @@ spec:
   enableBuiltInDetectors: true
   enableGuardrailsGateway: true
   replicas: 1
-  tlsSecrets:
-    - qwen-ca-tls  
