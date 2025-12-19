@@ -1,0 +1,87 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: fms-orchestr8-config-nlp
+data:
+  config.yaml: |
+    chunkers:
+      sentence:
+        type: sentence
+        service:
+            hostname: "chunker-service.test.svc.cluster.local"
+            port: 8085
+    chat_generation:
+      service:
+        hostname: llm-predictor.test.svc.cluster.local
+        port: 8080
+    detectors:
+      built-in-detector:
+        type: text_contents
+        service:
+            hostname: "127.0.0.1"
+            port: 8080
+        chunker_id: sentence
+        default_threshold: 0.5
+        detector_params:
+          regex:
+            - email
+            - ssn
+            - credit-card
+            - V60
+      hap:
+        type: text_contents
+        service:
+          hostname: ibm-hap-38m-detector-predictor.test.svc.cluster.local
+          port: 8000
+        chunker_id: sentence
+        default_threshold: 0.5
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: fms-orchestr8-config-gateway
+  labels:
+    app: fmstack-nlp
+data:
+  config.yaml: |
+    orchestrator:
+      host: "localhost"
+      port: 8032
+    detectors:
+      - name: built-in-detector
+        input: true
+        output: true
+        detector_params:
+          regex:
+            - email
+            - ssn
+            - credit-card
+            - V60
+      - name: hap
+        input: true
+        output: true
+        detector_params: {}
+    routes:
+      - name: all
+        detectors:
+          - built-in-detector
+          - hap
+      - name: hap
+        detectors:
+          - hap
+        fallback_message: "I'm sorry, I cannot help with that."
+      - name: passthrough
+        detectors:
+---
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: GuardrailsOrchestrator
+metadata:
+  name: guardrails-orchestrator
+  annotations:
+    security.opendatahub.io/enable-auth: 'false'
+spec:
+  orchestratorConfig: "fms-orchestr8-config-nlp"
+  guardrailsGatewayConfig: "fms-orchestr8-config-gateway" 
+  enableBuiltInDetectors: true
+  enableGuardrailsGateway: true
+  replicas: 1
