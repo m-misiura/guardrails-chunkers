@@ -1,5 +1,5 @@
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from .base_chunker import BaseChunker
 
@@ -7,7 +7,11 @@ from .base_chunker import BaseChunker
 class SentenceChunker(BaseChunker):
     """Chunk text into sentences using regex pattern."""
 
-    DEFAULT_PATTERN = r"[.!?]+(?=\s+[A-Z]|$)"
+    DEFAULT_PATTERN = r"[.!?]+(?=\s|\n|$)|\n"
+
+    def __init__(self):
+        """Initialize with pre-compiled regex for performance."""
+        self._compiled_regex = re.compile(self.DEFAULT_PATTERN)
 
     @property
     def name(self) -> str:
@@ -30,24 +34,48 @@ class SentenceChunker(BaseChunker):
         if not text.strip():
             return []
 
-        regex = re.compile(pattern or self.DEFAULT_PATTERN)
+        regex = re.compile(pattern) if pattern else self._compiled_regex
         sentences = []
         last_end = 0
+
+        # Process matched sentences
         for match in regex.finditer(text):
-            raw_sentence = text[last_end : match.end()]
-            stripped = raw_sentence.strip()
-            if stripped:
-                leading_spaces = len(raw_sentence) - len(raw_sentence.lstrip())
-                start_pos = last_end + leading_spaces
-                end_pos = start_pos + len(stripped)
-                sentences.append((stripped, start_pos, end_pos))
+            sentence = self._extract_sentence(text, last_end, match.end())
+            if sentence:
+                sentences.append(sentence)
             last_end = match.end()
+
+        # Process remaining text after last match
         if last_end < len(text):
-            raw_sentence = text[last_end:]
-            stripped = raw_sentence.strip()
-            if stripped:
-                leading_spaces = len(raw_sentence) - len(raw_sentence.lstrip())
-                start_pos = last_end + leading_spaces
-                end_pos = start_pos + len(stripped)
-                sentences.append((stripped, start_pos, end_pos))
-        return sentences or [(text.strip(), 0, len(text))] if text.strip() else []
+            sentence = self._extract_sentence(text, last_end, len(text))
+            if sentence:
+                sentences.append(sentence)
+
+        return sentences if sentences else [(text.strip(), 0, len(text.strip()))]
+
+    @staticmethod
+    def _extract_sentence(
+        text: str, start: int, end: int
+    ) -> Optional[Tuple[str, int, int]]:
+        """
+        Extract and calculate positions for a sentence.
+
+        Args:
+            text: Full text
+            start: Start position in text
+            end: End position in text
+
+        Returns:
+            (stripped_text, start_pos, end_pos) tuple or None if empty
+        """
+        raw_sentence = text[start:end]
+        stripped = raw_sentence.strip()
+
+        if not stripped:
+            return None
+
+        leading_spaces = len(raw_sentence) - len(raw_sentence.lstrip())
+        start_pos = start + leading_spaces
+        end_pos = start_pos + len(stripped)
+
+        return (stripped, start_pos, end_pos)
